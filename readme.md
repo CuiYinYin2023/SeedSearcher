@@ -1,9 +1,20 @@
+## 🧩 社区贡献 / 第三方前端
+
+以下是由社区成员贡献的相关前端项目（非官方维护）：
+
+- [@ForMDS](https://github.com/ForMDS) 的前端实现（[#2 PR](https://github.com/CuiYinYin2023/SeedSearcher/pull/2)）  
+    - 感谢贡献！我简单看了一下，但我不太懂前端语言，就没merge，贴在这里，需要的可以自行研究取用。
+  
+<img width="959" height="902" alt="QQ截图20251008153204" src="https://github.com/user-attachments/assets/bc314c56-d103-44e7-8ede-2fccf03a7421" />
+
 # 注意事项
-本搜种器主要用于本人星露谷挑战档，一切设计思路和用途都是针对本档写的，还没有泛用化，还没有做图形交互界面，只写了旧随机还没有写新随机
+本搜种器主要用于本人星露谷挑战档，一切设计思路和用途都是针对本档写的，还没有泛用化，还没有做图形交互界面（我没做，上面写了有别人做了），只写了旧随机还没有写新随机
 
 不会用可以在这个视频下面留言，我帮你搜：https://www.bilibili.com/video/BV1FRYYzhEeS
 
 未来有空会再productionalize
+
+- 应该不会了哈哈，但是我的另一个repo里写了兼容新随机和旧随机且有图形界面的新版https://github.com/CuiYinYin2023/StardewSeedSearcher/releases
 
 ---
 
