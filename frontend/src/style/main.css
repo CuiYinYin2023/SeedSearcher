@@ -1,0 +1,22 @@
+/* 禁止页面文字选中 */
+* {
+    -webkit-user-select: none;
+    /* Safari */
+    -moz-user-select: none;
+    /* Firefox */
+    -ms-user-select: none;
+    /* Internet Explorer/Edge */
+    user-select: none;
+    /* 标准语法 */
+}
+
+/* 对于需要选中的元素（如输入框、文本域等），可以恢复选中功能 */
+input,
+textarea,
+[contenteditable="true"],
+.selectable {
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+    user-select: text;
+}

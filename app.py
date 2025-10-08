@@ -1,4 +1,6 @@
-# app.py
+from flask import Flask, send_from_directory, request, jsonify
+from flask_cors import CORS
+import os
 import time
 from functools import partial
 from typing import Iterable, Tuple, List, Dict, Optional, Union, Set
@@ -9,154 +11,59 @@ from functions.chests import ChestsPredictor
 from functions.desert_festival import DesertFestivalPredictor
 from functions.trashcans import predict_saloon_trash_in_range
 from functions.night_events import predict_night_event_for_day
+from config import (
+    ENABLE_WEATHER_FILTER, ENABLE_MINES_FILTER, ENABLE_CHESTS_FILTER, ENABLE_DESERT_FILTER,
+    ENABLE_SALOON_FILTER, ENABLE_NIGHT_EVENT_FILTER,
+    SEED_START, SEED_RANGE,
+    TARGET_TYPES, WEATHER_CLAUSES,
+    MINES_START_DAY, MINES_END_DAY, FLOOR_START, FLOOR_END, REQUIRE_NO_INFESTED,
+    ChestAtom, ChestGroup, ChestRule, CHEST_RULES_MODE, CHEST_RULES,
+    REQUIRE_LEAH, REQUIRE_JAS,
+    saloon_start_day, saloon_end_day, saloon_daily_luck, saloon_has_book, saloon_require_min_hit,
+    NIGHT_CHECK_DAY, NIGHT_GREENHOUSE_UNLOCKED,
+    USE_LEGACY, SHOW_DATES, PROCESSES, CHUNKSIZE,
+)
+from api.routes import bp as api_bp
+from services.predict import (
+    evaluate_weather_clauses,
+    no_infested_in_range,
+    collect_levels_from_rules,
+    check_chest_rules_nested,
+    evaluate_saloon_trash_range,
+)
 
 
-# ========== 功能总开关 ==========
-ENABLE_WEATHER_FILTER = False  # 天气
-ENABLE_MINES_FILTER   = False  # 矿井怪物层
-ENABLE_CHESTS_FILTER  = False  # 混合宝箱筛选
-ENABLE_DESERT_FILTER  = False  # 沙漠节
-ENABLE_SALOON_FILTER = False   # 酒吧垃圾桶
-ENABLE_NIGHT_EVENT_FILTER = False   # 夜间事件（仙子）
+dist_path = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
+app = Flask(__name__, static_folder=dist_path, template_folder=dist_path)
 
-# ENABLE_WEATHER_FILTER = True  # 天气
-# ENABLE_MINES_FILTER   = True  # 矿井怪物层
-ENABLE_CHESTS_FILTER  = True  # 混合宝箱筛选
-# ENABLE_DESERT_FILTER  = True  # 沙漠节
-# ENABLE_SALOON_FILTER = True   # 酒吧垃圾桶
-# ENABLE_NIGHT_EVENT_FILTER = True   # 夜间事件（仙子）
-# =================================
-
-# ========= 种子范围 =========
-SEED_START = 0      # 从这里开始
-SEED_RANGE = 500    # 共筛这么多个
-
-# ========= 天气筛选参数（多区间规则）=========
-TARGET_TYPES = ("Rain", "Storm", "Green Rain")  # 默认雨天类型集合
-
-# 每条规则：start, end, min_count, 可选 targets（不写则用上面的 TARGET_TYPES）
-WEATHER_CLAUSES: List[Dict] = [
-    {"start": 7,  "end": 7,  "min_count": 1},                               
-    {"start": 14, "end": 26, "min_count": 4},                               
-    {"start": 30, "end": 27, "min_count": 10},                               
-    # 还可以继续加：{"start": X, "end": Y, "min_count": Z, "targets": ("Rain","Storm")} # 从日期X到Y，至少Z天targets类型的天气
+# 启用 CORS（仅开放 /api/* 路径），允许本地开发端口访问
+_allowed_origins = [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
 ]
-# =====================================================================
+CORS(
+    app,
+    resources={r"/api/*": {"origins": _allowed_origins}},
+    supports_credentials=True,
+    allow_headers=["Content-Type", "Authorization", "access-token"],
+)
 
-# =====================================================================
+# 首页和静态资源
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_vue(path):
+    file_path = os.path.join(app.static_folder, path)
+    if path != "" and os.path.exists(file_path):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, 'index.html')
 
-# ========= 矿井筛选参数 =========
-MINES_START_DAY = 5     # 绝对天数
-MINES_END_DAY   = 5
-FLOOR_START     = 1
-FLOOR_END       = 85
-REQUIRE_NO_INFESTED = True  # True=要求“完全没有怪物/史莱姆层”
-# =====================================================================
+# 注册 API 蓝图
+app.register_blueprint(api_bp)
 
-# ========= 混合宝箱筛选参数（支持嵌套 OR）=========
-# 顶层 CHEST_RULES_MODE:
-#   "ALL": 所有顶层条件需满足；顶层元素如果是列表 -> 该列表内“任一项”满足即可
-#   "ANY": 顶层任意一个条件满足即可；顶层元素如果是列表 -> 该列表内“任一项”满足即可
-# 规则举例：
-#   1) 20层=光辉戒指
-#      CHEST_RULES = [(20, "光辉戒指")]
-#   2) 20层=光辉戒指 且 (80层=长柄锤 或 110层=巨锤)
-#      CHEST_RULES_MODE = "ALL"
-#      CHEST_RULES = [ (20,"光辉戒指"), [ (80,"长柄锤"), (110,"巨锤") ] ]
-ChestAtom = Tuple[int, str]
-ChestGroup = List[ChestAtom]             # OR 组
-ChestRule = Union[ChestAtom, ChestGroup] # 顶层元素：单条 或 OR 组
+## 上述配置、常量已移动到 config.py
 
-CHEST_RULES_MODE = "ALL"
-CHEST_RULES: List[ChestRule] = [
-    (20, "磁铁戒指"),
-    [   # 这是一个 OR 组
-        [ (80, "长柄锤"),   (110, "太空之靴") ],  # AND 子组 A
-        [ (80, "蹈火者靴"), (110, "巨锤") ],      # AND 子组 B
-    ],
-]
-# =====================================================================
-
-# ========= 沙漠节筛选参数 =========
-REQUIRE_LEAH = True  # 至少一天出现 Leah
-REQUIRE_JAS  = True  # 至少一天出现 Jas
-# =====================================================================
-
-# ===== Saloon 垃圾桶（日期区间）示例集成：开始 =====
-# 你可以把这些参数接到你的 GUI/CLI；这里先用演示值
-saloon_start_day = 1               # 开始日期（春1 = 1）
-saloon_end_day = 2                 # 结束日期
-saloon_daily_luck = -0.1           # 统一运势（或使用 daily_luck_by_day 覆盖）
-saloon_has_book = False            # 是否读过垃圾之书
-saloon_require_min_hit = 1         # 至少命中 N 天才算通过
-
-
-# ===== Saloon 垃圾桶（日期区间）示例集成：开始 =====
-NIGHT_CHECK_DAY = 1                # 检查“春1”的夜间事件
-NIGHT_GREENHOUSE_UNLOCKED = False  # 温室已修复？只影响风暴提示，不影响仙子判定
-# =====================================================================
-
-USE_LEGACY   = True
-SHOW_DATES   = True
-PROCESSES    = 0
-CHUNKSIZE    = 1000
-
-# ---------- helpers ----------
-
-def evaluate_weather_clauses(
-    wp: WeatherPredictor,
-    clauses: List[Dict],
-    default_targets: Tuple[str, ...]
-) -> Tuple[bool, List[DayWeather]]:
-    """
-    逐条规则评估天气：
-      - 每条 {start, end, min_count, targets?} 都必须满足
-      - 返回 (ok_all, matched_union_days)
-        * matched_union_days：把所有规则中命中的天（满足 targets 的日子）去重合并后按天排序
-    为了少算 RNG，我们先算整段包络再筛。
-    """
-    if not clauses:
-        return True, []
-
-    # 计算包络区间
-    mn = min(int(c["start"]) for c in clauses)
-    mx = max(int(c["end"]) for c in clauses)
-    all_days = wp.predict_range(mn, mx)  # List[DayWeather]，包含 mn..mx
-
-    # 辅助索引：abs_day -> DayWeather
-    by_day: Dict[int, DayWeather] = {d.abs_day: d for d in all_days}
-
-    ok_all = True
-    matched_union: Dict[int, DayWeather] = {}
-
-    for c in clauses:
-        s = int(c["start"]); e = int(c["end"]); need = int(c["min_count"])
-        t = tuple(c.get("targets", default_targets))
-        tset = set(t)
-
-        # 当前规则命中天
-        hits = []
-        for day in range(s, e + 1):
-            dw = by_day.get(day)
-            if dw and dw.weather_en in tset:
-                hits.append(dw)
-                matched_union[dw.abs_day] = dw  # 合并去重
-
-        if len(hits) < need:
-            ok_all = False  # 任何一条不满足则整体不通过
-
-    # 合并后的天按绝对日排序
-    merged = [by_day[d] for d in sorted(matched_union.keys())]
-    return ok_all, merged
-
-def no_infested_in_range(mp: MinesPredictor, start_day: int, end_day: int, floor_start: int, floor_end: int) -> Tuple[bool, List[DayInfested]]:
-    all_days = mp.predict_infested_in_range(start_day, end_day)
-    ok = True
-    for d in all_days:
-        if any(floor_start <= f <= floor_end for f in d.floors):
-            ok = False
-            break
-    return ok, all_days
+## ---------- helpers（部分工具函数已移至 services.predict） ----------
 
 def fmt_weather(days: List[DayWeather]) -> str:
     return "、".join([f"{d.season_en}{d.dom}({d.weather_zh})" for d in days])
@@ -170,68 +77,6 @@ def fmt_mines(details: List[DayInfested], floor_start: int, floor_end: int) -> s
     return " | ".join(parts) if parts else "无"
 
 # ====== 宝箱（支持嵌套 OR）的工具函数 ======
-def _collect_levels_from_rules(rules: List[ChestRule]) -> List[int]:
-    levels: Set[int] = set()
-
-    def walk(node):
-        if isinstance(node, list):
-            for x in node:
-                walk(x)
-        else:
-            lv, _ = node
-            levels.add(lv)
-
-    for r in rules:
-        walk(r)
-    return sorted(levels)
-
-
-def _normalize_rules(cp: ChestsPredictor, rules: List[ChestRule]) -> List[ChestRule]:
-    def norm_node(node):
-        if isinstance(node, list):
-            return [norm_node(x) for x in node]  # 递归：OR 组或 AND 子组
-        else:
-            lv, item = node
-            return (lv, cp.normalize_item(item))  # 中文/别名 → 规范英文
-    return [norm_node(r) for r in rules]
-
-
-def check_chest_rules_nested(cp: ChestsPredictor, rules: List[ChestRule], mode: str) -> Tuple[bool, Dict[int, Optional[str]]]:
-    if not rules:
-        return True, {}
-
-    rules_norm = _normalize_rules(cp, rules)
-    levels = _collect_levels_from_rules(rules_norm)
-    pred = cp.predict_levels(levels)  # {level: canonical_en or None}
-
-    def atom_ok(atom: ChestAtom) -> bool:
-        lv, want = atom
-        return pred.get(lv) == want
-
-    def or_group_ok(group: List[Union[ChestAtom, List[ChestAtom]]]) -> bool:
-        """
-        OR 组：任一元素满足即可
-          - 元素若为 atom：等价于 AND(单个)
-          - 元素若为 List[atom]：视作 AND 子组（全部命中）
-        """
-        for elem in group:
-            if isinstance(elem, list):          # AND 子组
-                if all(atom_ok(a) for a in elem):
-                    return True
-            else:                               # 单个 atom
-                if atom_ok(elem):
-                    return True
-        return False
-
-    def eval_top(node) -> bool:
-        if isinstance(node, list):             # OR 组
-            return or_group_ok(node)
-        else:                                   # 原子
-            return atom_ok(node)
-
-    flags = [eval_top(n) for n in rules_norm]
-    ok = any(flags) if mode.upper() == "ANY" else all(flags)
-    return ok, pred
 
 def fmt_chests_human(cp: ChestsPredictor, details: Dict[int, Optional[str]]) -> str:
     pairs = []
@@ -244,56 +89,8 @@ def fmt_chests_human(cp: ChestsPredictor, details: Dict[int, Optional[str]]) -> 
         pairs.append(f"L{lv}={name}")
     return ", ".join(pairs) if pairs else "无规则"
 
-def evaluate_saloon_trash_range(
-    seed: int,
-    *,
-    start_day: int,
-    end_day: int,
-    daily_luck: float = -0.1,
-    has_garbage_book: bool = False,
-    daily_luck_by_day: dict | None = None,
-    require_min_hit_days: int = 1,   # 范围内至少出现多少次 Dish 才算合格（默认≥1）
-):
-    """
-    评估 [start_day, end_day] 范围内的“酒吧垃圾桶 DishOfTheDay”命中情况。
-    只统计 source == 'DishOfTheDay' 的天数；其他掉落既不计入也不淘汰。
-
-    返回: (ok, summary_text, detail_dict)
-      - ok: Dish 命中天数 >= require_min_hit_days
-      - summary_text: 如 "酒吧垃圾桶（Dish）命中 2/7 天（1,3）"
-      - detail_dict["summary"] 包含 dish_days, dish_days_hit 等字段
-    """
-    out = predict_saloon_trash_in_range(
-        seed,
-        start_day,
-        end_day,
-        has_garbage_book=has_garbage_book,
-        daily_luck=daily_luck,
-        daily_luck_by_day=daily_luck_by_day,
-    )
-    results = out["results"]
-    days_total = out["summary"]["days_total"]
-
-    dish_days = [d for d in range(start_day, end_day + 1) if results[d].source == "DishOfTheDay"]
-    dish_days_hit = len(dish_days)
-    ok = dish_days_hit >= max(1, int(require_min_hit_days))
-
-    if dish_days:
-        hit_str = ",".join(str(d) for d in dish_days)
-        tag = f"酒吧垃圾桶（Dish）命中 {dish_days_hit}/{days_total} 天（{hit_str}）"
-    else:
-        tag = f"酒吧垃圾桶（Dish）命中 0/{days_total} 天"
-
-    out_ext = {
-        "results": results,
-        "summary": {
-            **out["summary"],
-            "dish_days": dish_days,
-            "dish_days_hit": dish_days_hit,
-            "require_min_hit_days": int(require_min_hit_days),
-        }
-    }
-    return ok, tag, out_ext
+## evaluate_weather_clauses / no_infested_in_range / check_chest_rules_nested /
+## collect_levels_from_rules / evaluate_saloon_trash_range 已从 services.predict 引入
 
 
 # ---------- 顶层 worker ----------
@@ -370,7 +167,7 @@ def worker(
 
     # 宝箱
     if enable_chests:
-        unique_levels = len(_collect_levels_from_rules(chest_rules))
+        unique_levels = len(collect_levels_from_rules(chest_rules))
         cost_chests = max(1, unique_levels)
         def _eval_chests():
             nonlocal chests_detail
@@ -521,4 +318,9 @@ def main():
     print(f"总耗时：{elapsed:.2f} 秒，进程数：{processes or 'auto'}，chunksize={CHUNKSIZE}")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--flask":
+        # 禁用 debug 模式以支持多进程
+        app.run(debug=False, host='127.0.0.1', port=5000)
+    else:
+        main()
